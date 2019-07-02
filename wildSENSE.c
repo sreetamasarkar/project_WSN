@@ -16,6 +16,11 @@
 static uint16_t node_id;		        // Stores node id
 static int node_id_new;		        // Stores node id
 
+typedef struct{
+	int hops;
+	char text[25];
+	char type[10];
+}route_packet;
 
 
 const linkaddr_t node_addr;
@@ -25,7 +30,7 @@ const linkaddr_t node_addr;
 LIST(nbr_list);
 MEMB(neighbor_mem,neighbors, MAX_NEIGHBORS);
 
-static int rssi_arr[MAX_NEIGHBORS][3]; //take last 3 values of rssi
+//static int rssi_arr[MAX_NEIGHBORS][3]; //take last 3 values of rssi
 
 // Creates an instance of a broadcast connection.
 static struct broadcast_conn broadcast;
@@ -108,9 +113,14 @@ void add_routing_entry(const linkaddr_t *address,uint8_t cost)
 
 static void inform_neighbor(const linkaddr_t * address)
 {
-	packetbuf_copyfrom("unicast",8);
-	packetbuf_set_attr(PACKETBUF_ATTR_HOPS,0);
-	packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,UNICAST);
+	route_packet tx_payload;
+	strcpy(tx_payload.text,"Message from Gateway!");
+	strcpy(tx_payload.type,"unicast");
+	tx_payload.hops = 0;
+	//tx_payload.hops = 5;
+	packetbuf_copyfrom(&tx_payload,22);
+	//packetbuf_set_attr(PACKETBUF_ATTR_HOPS,0);
+	//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,UNICAST);
 	packetbuf_set_addr(PACKETBUF_ADDR_ESENDER,1);
 	printf("\nSending Unicast packet");
 	unicast_send(&unicast,address);
@@ -150,25 +160,30 @@ void estimate_short_path()
 void share_routing_table()
 {
 	estimate_short_path();
-	printf("\nNeighbor Nearest to Gateway (by hop count): %d%d",nearest_neighbor.addr.u8[0],nearest_neighbor.addr.u8[1]);
+	printf("\nNeighbor Nearest to Gateway (by hop count): %x%x",nearest_neighbor.addr.u8[0],nearest_neighbor.addr.u8[1]);
 
+	route_packet payload;
 	static neighbors *e = NULL;
 	e = (neighbors *)list_head(nbr_list);
-	if (e != NULL)
-	{
+	for(e = (neighbors *)list_head(nbr_list); e != NULL;e = (neighbors *)e->next) {
 		if(node_id_new == 1)	//Gateway node
 		{
 			nearest_neighbor.cost=0;
 			nearest_neighbor.addr.u8[0]=0x00;
 			nearest_neighbor.addr.u8[1]=0x01;
 		}
-		packetbuf_copyfrom("unicast",8);
-		packetbuf_set_attr(PACKETBUF_ATTR_HOPS,nearest_neighbor.cost);
-		packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,UNICAST);
+		strcpy(payload.text,"Share Route Table");
+		strcpy(payload.type,"unicast");
+		payload.hops = nearest_neighbor.cost;
+		//payload.hops = 7;
+		packetbuf_copyfrom(&payload,25);
+		//packetbuf_set_attr(PACKETBUF_ATTR_HOPS,nearest_neighbor.cost);
+		//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,UNICAST);
 		packetbuf_set_addr(PACKETBUF_ADDR_ESENDER,&nearest_neighbor.addr);
+		printf("\nSending Unicast message to %x%x: Hops = %d",e->nbr_addr.u8[0], e->nbr_addr.u8[1],payload.hops);
 		unicast_send(&unicast,&e->nbr_addr);
-		e = (neighbors *)e->next;
 	}
+
 }
 
 // Defines the behavior of a connection upon receiving data.
@@ -202,17 +217,19 @@ broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from) {
 // Defines the behavior of a connection upon receiving data.
 static void
 unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
+	static route_packet rx_payload;
+
 	//printf("\nCheck fot unicast(1) = %d",packetbuf_attr(PACKETBUF_ATTR_PACKET_TYPE));
 	if((int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI)>(-60))
 	{
 		leds_on(LEDS_GREEN);
-		printf("\nUnicast message received from 0x%x%x: '%s' [RSSI %d]\n",
-				 from->u8[0], from->u8[1],
-				(char *)packetbuf_dataptr(),
+		packetbuf_copyto(&rx_payload);
+		printf("\nUnicast message received from 0x%x%x: %s Hops = %d, Type = %s [RSSI %d]\n",
+				 from->u8[0], from->u8[1], rx_payload.text, rx_payload.hops, rx_payload.type,
 				(int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI));
 
-		printf("Hops = %d",(int16_t)packetbuf_attr(PACKETBUF_ATTR_HOPS));
-		add_routing_entry(from,packetbuf_attr(PACKETBUF_ATTR_HOPS));
+		printf("Hops = %d",rx_payload.hops);
+		add_routing_entry(from,rx_payload.hops);
 		print_routing_table();
 
 		if(!gateway_found)
@@ -261,7 +278,7 @@ PROCESS_THREAD(flooding_process, ev, data) {
 
 
 	static int broadcast_counter = 0;
-	static uint8_t timer_interval = 3;	// In seconds
+	static uint8_t timer_interval = 2;	// In seconds
 
 	static struct etimer broadcast_timer;
 
@@ -282,7 +299,7 @@ PROCESS_THREAD(flooding_process, ev, data) {
 
 
 	while(1) {
-		etimer_set(&broadcast_timer, CLOCK_SECOND * timer_interval);
+		etimer_set(&broadcast_timer, CLOCK_SECOND * timer_interval*random_rand()/RANDOM_RAND_MAX);
 
 		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&broadcast_timer));
 		if (node_id_new != 1)
@@ -307,6 +324,7 @@ PROCESS_THREAD(flooding_process, ev, data) {
 			//			check_gateway();
 			//			gBroadcast_ended=true;
 						broadcast_counter=0;
+						process_post(&route_share_process, PROCESS_EVENT_MSG, 0);
 						PROCESS_EXIT(); // Exit the process.
 					}
 		}
@@ -323,11 +341,22 @@ PROCESS_THREAD(route_share_process, ev, data) {
 	etimer_set(&route_share_etimer, CLOCK_SECOND*ROUTE_SHARE_INTERVAL+(random_rand()%5)/5);
 
 	while (1){
-		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&route_share_etimer));
-		if(gateway_found)
-			printf("\nSharing routing table..");
-			share_routing_table();
-		etimer_set(&route_share_etimer, CLOCK_SECOND*ROUTE_SHARE_INTERVAL+(random_rand()%5)/5);
+		PROCESS_WAIT_EVENT();
+		if (ev == PROCESS_EVENT_MSG) {
+			if (etimer_expired(&route_share_etimer))
+			{
+				printf("Found Gateway: %d\n", gateway_found);
+				if(gateway_found)
+				{
+					printf("\nSharing routing table..");
+					share_routing_table();
+				}
+				etimer_set(&route_share_etimer, CLOCK_SECOND*ROUTE_SHARE_INTERVAL+(random_rand()%5)/5);
+			}
+
+			//etimer_set(&route_share_etimer, CLOCK_SECOND*ROUTE_SHARE_INTERVAL+(random_rand()%5)/5);
+			process_post(&route_share_process, PROCESS_EVENT_MSG, 0);
+		}
 	}
 	PROCESS_END();
 }
