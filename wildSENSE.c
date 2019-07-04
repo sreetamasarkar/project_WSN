@@ -1,4 +1,4 @@
-
+//#define MOBILE_MOTE 1
 /*----------------------------INCLUDES----------------------------------------*/
 // standard C includes:
 #include <stdio.h>
@@ -15,13 +15,6 @@
 
 static uint16_t node_id;		        // Stores node id
 static int node_id_new;		        // Stores node id
-
-typedef struct{
-	int hops;
-	char text[25];
-	char type[10];
-}route_packet;
-
 
 const linkaddr_t node_addr;
 
@@ -92,7 +85,7 @@ void add_routing_entry(const linkaddr_t *address,uint8_t cost)
 	{
 		printf("\nNew Neighbour found");
 		neighbors *temp = memb_alloc(&neighbor_mem);
-/*		neighbors temp;
+/*		neighbors temp;,_from_animal_mote.text
 		linkaddr_copy(&temp.nbr_addr,address);
 		temp.hop_count = cost+1;
 		list_add(nbr_list,&temp);
@@ -114,7 +107,7 @@ void add_routing_entry(const linkaddr_t *address,uint8_t cost)
 static void inform_neighbor(const linkaddr_t * address)
 {
 	route_packet tx_payload;
-	strcpy(tx_payload.text,"Message from Gateway!");
+	strcpy(tx_payload.text,"Gateway!");
 	strcpy(tx_payload.type,"unicast");
 	tx_payload.hops = 0;
 	//tx_payload.hops = 5;
@@ -186,21 +179,26 @@ void share_routing_table()
 
 }
 
+
+
 // Defines the behavior of a connection upon receiving data.
 static void
 broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from) {
+#ifndef MOBILE_MOTE
 	printf("RSSI %d = \n",(int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI));
+	static route_packet rx_packet;
+	packetbuf_copyto(&rx_packet);
 
 	if((int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI)>(-60))
 	{
 		leds_on(LEDS_GREEN);
-		printf("Broadcast message received from 0x%x%x: '%s' [RSSI %d]\n",
+		printf("Broadcast message received from 0x%x%x: '%s' [RSSI %d] type: %s\n",
 				 from->u8[0], from->u8[1],
-				(char *)packetbuf_dataptr(),
-				(int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI));
+				 rx_packet.text,
+				(int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI), rx_packet.type);
 		//Here i will add only the neighbor entry to the table
 		//with infinite hop count
-		if(BROADCAST == packetbuf_attr(PACKETBUF_ATTR_PACKET_TYPE))
+		if (!strcmp(rx_packet.type,"TRACKING_MOTE")) //strcmp returns 0 if 2 strings are equal
 		{
 			printf("\nAdd neighbour to list: ");
 			//Adding neighbors to the list
@@ -210,13 +208,19 @@ broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from) {
 				inform_neighbor(from);
 			}
 		}
+		if (strcmp(rx_packet.type,"MOBILE_MOTE"))
+		{
+			unicast_send(&unicast,&nearest_neighbor.addr);
+		}
 	leds_off(LEDS_GREEN);
 }
+#endif //MOBILE_MOTE
 }
 
 // Defines the behavior of a connection upon receiving data.
 static void
 unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
+#ifndef MOBILE_MOTE
 	static route_packet rx_payload;
 
 	//printf("\nCheck fot unicast(1) = %d",packetbuf_attr(PACKETBUF_ATTR_PACKET_TYPE));
@@ -228,16 +232,42 @@ unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
 				 from->u8[0], from->u8[1], rx_payload.text, rx_payload.hops, rx_payload.type,
 				(int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI));
 
-		printf("Hops = %d",rx_payload.hops);
-		add_routing_entry(from,rx_payload.hops);
-		print_routing_table();
+		if (!strcmp(rx_packet.type,"TRACKING_MOTE")) //strcmp returns 0 if 2 strings are equal
+		{
+			add_routing_entry(from,rx_payload.hops);
+			print_routing_table();
 
-		if(!gateway_found)
-			gateway_found = true;
-
+			if(!gateway_found)
+				gateway_found = true;
+		}
+//Start working from here
+		if (strcmp(rx_packet.type,"MOBILE_MOTE"))
+		{
+			if(node_id_new != 1) //not Gateway node
+			{
+				forward_data(from,true);
+			}
+			else
+			{
+				uint16_t rssi,packet_len;
+				packet_len=packetbuf_datalen();
+				rssi = packetbuf_attr(PACKETBUF_ATTR_RSSI);
+				//printf("rssi at broadcast receive: %x\r\n",rssi);
+				memcpy(packetbuf_dataptr()+packet_len,(char*)(&rssi),2);
+				memcpy(packetbuf_dataptr()+packet_len+2,from,2);
+				linkaddr_t *asset_addr=(linkaddr_t*)(packetbuf_dataptr()+7);
+				if(linkaddr_cmp(&asset1_addr,asset_addr))
+				{
+					process_packet_gateway_asset1(packetbuf_dataptr(),packet_len+4);
+				}
+				if(linkaddr_cmp(&asset2_addr,asset_addr))
+				{
+					process_packet_gateway_asset2(packetbuf_dataptr(),packet_len+4);
+				}
+		}
 		leds_off(LEDS_GREEN);
 	}
-
+#endif //MOBILE_MOTE
 }
 
 int node_id_map(int node_id)
@@ -282,6 +312,9 @@ PROCESS_THREAD(flooding_process, ev, data) {
 
 	static struct etimer broadcast_timer;
 
+	route_packet _from_animal_mote;
+	route_packet _from_tracking_mote;
+
 	// Configure your team's channel (11 - 26).
 	NETSTACK_CONF_RADIO.set_value(RADIO_PARAM_CHANNEL,14);
 
@@ -302,31 +335,48 @@ PROCESS_THREAD(flooding_process, ev, data) {
 		etimer_set(&broadcast_timer, CLOCK_SECOND * timer_interval*random_rand()/RANDOM_RAND_MAX);
 
 		PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&broadcast_timer));
-		if (node_id_new != 1)
+		if (node_id_new != 1) //not gateway mote
 		{
-			if(broadcast_counter < 10)
-					{
-						leds_on(LEDS_RED);
-						packetbuf_copyfrom("I am your neighbor", 20);
-						packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,BROADCAST);
-						packetbuf_set_attr(PACKETBUF_ATTR_HOPS,INFINITE_HOP_COUNT);
-						broadcast_send(&broadcast);
-						printf("\nBroadcast message %d sent.\n",broadcast_counter);
-						broadcast_counter++;
-						leds_off(LEDS_RED);
-					}
-					else
-					{
-						/* If broadcast period finished*/
-						printf("--------------Stopping the broadcast-------------------- \n\r");
-						etimer_stop(&broadcast_timer);
-			//			print_routing_table();
-			//			check_gateway();
-			//			gBroadcast_ended=true;
-						broadcast_counter=0;
-						process_post(&route_share_process, PROCESS_EVENT_MSG, 0);
-						PROCESS_EXIT(); // Exit the process.
-					}
+			if (node_id_new == 7 || node_id_new == 8) //mobile mote
+			{
+				leds_on(LEDS_RED);
+				strcpy(_from_animal_mote.text,"Message from Animal Mote!");
+				strcpy(_from_animal_mote.type,"MOBILE_MOTE");
+				_from_animal_mote.hops = INFINITE_HOP_COUNT;
+				packetbuf_copyfrom(&_from_animal_mote,80);
+				broadcast_send(&broadcast);
+				printf("\nBroadcast message %d sent.\n",broadcast_counter);
+				broadcast_counter++;
+				leds_off(LEDS_RED);
+			}
+			else
+			{
+				if(broadcast_counter < 10)
+				{
+					leds_on(LEDS_RED);
+					strcpy(_from_tracking_mote.text,"Message from Tracking Mote!");
+					strcpy(_from_tracking_mote.type,"TRACKING_MOTE");
+					_from_tracking_mote.hops = INFINITE_HOP_COUNT;
+					packetbuf_copyfrom(&_from_tracking_mote,80);
+					broadcast_send(&broadcast);
+					printf("\nBroadcast message %d sent.\n",broadcast_counter);
+					broadcast_counter++;
+					leds_off(LEDS_RED);
+				}
+				else
+				{
+					/* If broadcast period finished*/
+					printf("--------------Stopping the broadcast-------------------- \n\r");
+					etimer_stop(&broadcast_timer);
+		//			print_routing_table();
+		//			check_gateway();
+		//			gBroadcast_ended=true;
+					broadcast_counter=0;
+					process_post(&route_share_process, PROCESS_EVENT_MSG, 0);
+					PROCESS_EXIT(); // Exit the process.
+				}
+			}
+
 		}
 	}
 
