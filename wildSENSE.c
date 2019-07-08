@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
-
+#include <string.h>
 // Contiki-specific includes:
 #include "contiki.h"
 #include "net/rime/rime.h"     // Establish connections.
@@ -218,7 +218,7 @@ static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 	{
 		packet.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
 	}
-	sprintf(sndr_addr, "%d", ((from->u8[0] << 8) | from->u8[1]));
+	sprintf(sndr_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
 	strcat(packet.path, sndr_addr);
 	printf("\nText = %s; Type = %s; Hops = %d; rssi = %d; path = %s\n",
 			packet.text, packet.type, packet.hops, packet.rssi, packet.path);
@@ -231,13 +231,55 @@ static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 						packet.path);
 		//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,ASSET_TRACKING);
 		//Later unicast it to nearby nearest neighbor
-		//unicast_send(&unicast, &nearest_neighbor.addr);
+		unicast_send(&unicast, &nearest_neighbor.addr);
 
 	}
 
 	//return true;
 }
 #endif //ASSET_MOTE
+
+static bool process_packet_gateway(route_packet packet_gw)
+{
+	printf("%s\r\n",__func__);
+	static uint16_t prev_rssi = 0,current_rssi = 0;
+
+	static linkaddr_t prev_addr = {0},current_addr = {0} ;
+	char path[20];
+	char gw_id[20];
+	current_rssi = packet_gw.rssi;
+	strcpy(path,packet_gw.path);
+	char delim[] = "-";
+	char *ptr = strtok(path, delim);
+	//start here
+	linkaddr_copy(&current_addr,(linkaddr_t *)(ptr));
+	//adding gateway address to the end of the packet
+	sprintf(gw_id, "%x", (node_id));
+	strcat(packet_gw.path, gw_id);
+	//memcpy(packet_ptr+packet_len,&linkaddr_node_addr,2);
+	//packet_len += 2;
+	printf("path: %s\n",packet_gw.path);
+	printf("current address: %s\n",ptr);
+	if(!linkaddr_cmp(&current_addr,&prev_addr))
+	//if(true)
+	{
+		if(current_rssi > (prev_rssi+10) )
+		{
+			//printf("**** current_rssi > (prev_rssi + 30) **\r\n");
+			linkaddr_copy(&prev_addr,&current_addr);
+			prev_rssi = current_rssi;
+//			printf("curr rssi %d nearest_tracking_mote_addr %x.%x\r\n",current_rssi,current_addr.u8[0],current_addr.u8[1]);
+			//print_packet(packet_ptr,packet_len);
+		}
+	}
+	else
+	{
+		prev_rssi = current_rssi;
+//		printf("curr rssi %d nearest_tracking_mote_addr %x.%x\r\n",current_rssi,current_addr.u8[0],current_addr.u8[1]);
+		//print_packet(packet_ptr,packet_len);
+	}
+	return true;
+}
 
 // Defines the behavior of a connection upon receiving data.
 static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
@@ -246,7 +288,7 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 	printf("RSSI %d = \n", (int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
 	static route_packet rx_packet;
 	bool a;
-	char sndr_addr[20];
+	char s_addr[20];
 
 	packetbuf_copyto(&rx_packet);
 
@@ -273,26 +315,8 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 		{
 			if (node_id_new != 1) //not Gateway node
 			{
-				//forward_data(from, true);
-				if (gateway_found == false)
-				{
-					printf("Asset packet received but gateway not found \r\n");
-				}
-				rx_packet.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
-				sprintf(sndr_addr, "%d", ((from->u8[0] << 8) | from->u8[1]));
-				strcat(rx_packet.path, sndr_addr);
-				if (nearest_neighbor.addr.u8[0] != 0 && nearest_neighbor.addr.u8[1] != 0)
-				{
-					packetbuf_copyfrom(&rx_packet, 80);
-					printf("\nForwarding unicast packet: '%s' RSSI %d type: %s path:%s\n",
-									rx_packet.text, rx_packet.rssi, rx_packet.type,
-									rx_packet.path);
-					//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,ASSET_TRACKING);
-					//Later unicast it to nearby nearest neighbor
-					unicast_send(&unicast, &nearest_neighbor.addr);
-
-				}
-				printf("abc");
+				forward_data(from, true);
+				//printf("abc");
 			}
 			else
 			{
@@ -300,9 +324,10 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 				//packet_len = packetbuf_datalen();
 				//printf("rssi at broadcast receive: %x\r\n",rssi);
 				rx_packet.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
-				strcat(rx_packet.path,
-						(char) ((from->u8[0] << 8) | from->u8[1]));
-				linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
+				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
+				strcat(rx_packet.path, s_addr);
+				process_packet_gateway(rx_packet);
+				//linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
 				/*if (linkaddr_cmp(&asset1_addr, asset_addr))
 				 {
 				 process_packet_gateway_asset1(packetbuf_dataptr(),
@@ -327,15 +352,17 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 #ifndef MOBILE_MOTE
 	static route_packet rx_packet_uni;
 	bool a;
+	char s_addr[20];
+
 	//printf("\nCheck fot unicast(1) = %d",packetbuf_attr(PACKETBUF_ATTR_PACKET_TYPE));
 	if ((int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI) > (-60))
 	{
 		leds_on(LEDS_GREEN);
 		packetbuf_copyto(&rx_packet_uni);
 		printf(
-				"\nUnicast message received from 0x%x%x: %s Hops = %d, Type = %s [RSSI %d]\n",
+				"\nUnicast message received from 0x%x%x: %s Hops: %d, Type: %s path: %s [RSSI %d]\n",
 				from->u8[0], from->u8[1], rx_packet_uni.text,
-				rx_packet_uni.hops, rx_packet_uni.type,
+				rx_packet_uni.hops, rx_packet_uni.type,rx_packet_uni.path,
 				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
 
 		if (!gateway_found)
@@ -359,8 +386,10 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 				//packet_len = packetbuf_datalen();
 				//printf("rssi at broadcast receive: %x\r\n",rssi);
 				rx_packet_uni.rssi = packetbuf_attr(PACKETBUF_ATTR_RSSI);
-				strcat(rx_packet_uni.path,
-						(char) ((from->u8[0] << 8) | from->u8[1]));
+				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
+				strcat(rx_packet_uni.path, s_addr);
+				process_packet_gateway(rx_packet_uni);
+
 				linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
 				/*if (linkaddr_cmp(&asset1_addr, asset_addr))
 				 {
