@@ -12,6 +12,9 @@
 #include "dev/button-sensor.h" // User Button
 #include "dev/leds.h"          // Use LEDs.
 #include "core/net/linkaddr.h"
+#include "dev/adc-zoul.h"      // ADC
+#include "dev/zoul-sensors.h"  // Sensor functions
+#include "dev/sys-ctrl.h"
 
 static uint16_t node_id;		        // Stores node id
 static int node_id_new;		        // Stores node id
@@ -81,7 +84,9 @@ void print_routing_table()
 	}
 	printf("\r\n");
 }
-
+#include "dev/adc-zoul.h"      // ADC
+#include "dev/zoul-sensors.h"  // Sensor functions
+#include "dev/sys-ctrl.h"
 void add_routing_entry(const linkaddr_t *address, uint8_t cost)
 {
 	bool status = false;
@@ -241,34 +246,35 @@ static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 
 static bool process_packet_gateway(route_packet packet_gw)
 {
-	printf("%s\r\n",__func__);
+	//printf("%s\r\n",__func__);
 	static uint16_t prev_rssi = 0,current_rssi = 0;
 
-	static linkaddr_t prev_addr = {0},current_addr = {0} ;
+	char *prev_addr = NULL;
 	char path[20];
 	char gw_id[20];
 	current_rssi = packet_gw.rssi;
-	strcpy(path,packet_gw.path);
-	char delim[] = "-";
-	char *ptr = strtok(path, delim);
-	//start here
-	linkaddr_copy(&current_addr,(linkaddr_t *)(ptr));
+	//linkaddr_copy(&current_addr,(linkaddr_t *)(ptr));
 	//adding gateway address to the end of the packet
 	sprintf(gw_id, "%x", (node_id));
 	strcat(packet_gw.path, gw_id);
+	strcpy(path,packet_gw.path);
+	char *delim = "-";
+	char *current_addr = strtok(path, delim);
+	current_addr = strtok(NULL, delim);
 	//memcpy(packet_ptr+packet_len,&linkaddr_node_addr,2);
 	//packet_len += 2;
+	printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
 	printf("path: %s\n",packet_gw.path);
-	printf("current address: %s\n",ptr);
-	if(!linkaddr_cmp(&current_addr,&prev_addr))
+	printf("current address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_rssi,current_rssi);
+	if(strcmp(current_addr,prev_addr)) //strcmp returns 1 if 2 address are not same
 	//if(true)
 	{
 		if(current_rssi > (prev_rssi+10) )
 		{
 			//printf("**** current_rssi > (prev_rssi + 30) **\r\n");
-			linkaddr_copy(&prev_addr,&current_addr);
+			strcpy(prev_addr,current_addr);
 			prev_rssi = current_rssi;
-//			printf("curr rssi %d nearest_tracking_mote_addr %x.%x\r\n",current_rssi,current_addr.u8[0],current_addr.u8[1]);
+			printf("curr rssi %d nearest_tracking_mote_addr %s\r\n",current_rssi,current_addr);
 			//print_packet(packet_ptr,packet_len);
 		}
 	}
@@ -295,10 +301,10 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 	if ((int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI) > (-60))
 	{
 		leds_on(LEDS_GREEN);
-		printf(
-				"\nBroadcast message received from 0x%x%x: '%s' [RSSI %d] type: %s\n",
-				from->u8[0], from->u8[1], rx_packet.text,
-				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI), rx_packet.type);
+//		printf(
+//				"\nBroadcast message received from 0x%x%x: '%s' [RSSI %d] type: %s\n",
+//				from->u8[0], from->u8[1], rx_packet.text,
+//				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI), rx_packet.type);
 		//Here i will add only the neighbor entry to the table
 		//with infinite hop count
 		if (!strcmp(rx_packet.type, "TRACKING_MOTE")) //strcmp returns 0 if 2 strings are equal
@@ -359,11 +365,11 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 	{
 		leds_on(LEDS_GREEN);
 		packetbuf_copyto(&rx_packet_uni);
-		printf(
-				"\nUnicast message received from 0x%x%x: %s Hops: %d, Type: %s path: %s [RSSI %d]\n",
-				from->u8[0], from->u8[1], rx_packet_uni.text,
-				rx_packet_uni.hops, rx_packet_uni.type,rx_packet_uni.path,
-				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
+//		printf(
+//				"\nUnicast message received from 0x%x%x: %s Hops: %d, Type: %s path: %s [RSSI %d]\n",
+//				from->u8[0], from->u8[1], rx_packet_uni.text,
+//				rx_packet_uni.hops, rx_packet_uni.type,rx_packet_uni.path,
+//				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
 
 		if (!gateway_found)
 			gateway_found = true;
@@ -385,7 +391,7 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 				//uint16_t rssi, packet_len;
 				//packet_len = packetbuf_datalen();
 				//printf("rssi at broadcast receive: %x\r\n",rssi);
-				rx_packet_uni.rssi = packetbuf_attr(PACKETBUF_ATTR_RSSI);
+				rx_packet_uni.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
 				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
 				strcat(rx_packet_uni.path, s_addr);
 				process_packet_gateway(rx_packet_uni);
@@ -500,9 +506,16 @@ PROCESS_THREAD(flooding_process, ev, data)
 				if (node_id_new == 7 || node_id_new == 8) //mobile mote
 				{
 					leds_on(LEDS_RED);
-					strcpy(_from_animal_mote.text, "Message from Animal Mote!");
+					int battery_val = vdd3_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED);
+					int temp_val = cc2538_temp_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED);
+					int adc3_value = adc_zoul.value(ZOUL_SENSORS_ADC3) >> 4;
+					int BPM = (adc3_value >= 920) ? adc3_value/13.857 : 0;
+					sprintf(_from_animal_mote.text, "Bat:%d mV Temp:%d C Hb: %d",
+							battery_val, temp_val, BPM);
+					//strcpy(_from_animal_mote.text, "Message from Animal Mote!");
 					strcpy(_from_animal_mote.type, "MOBILE_MOTE");
 					_from_animal_mote.hops = INFINITE_HOP_COUNT;
+					_from_animal_mote.path[0] = '\0';
 					packetbuf_copyfrom(&_from_animal_mote, 80);
 					broadcast_send(&broadcast);
 					printf("\nBroadcast message %d sent.\n", broadcast_counter);
