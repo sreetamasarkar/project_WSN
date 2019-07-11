@@ -1,4 +1,4 @@
-//#define MOBILE_MOTE 1
+#define MOBILE_MOTE 1
 /*----------------------------INCLUDES----------------------------------------*/
 // standard C includes:
 #include <stdio.h>
@@ -208,7 +208,6 @@ void share_routing_table()
  */
 static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 {
-	static uint16_t rssi = 0;
 	static route_packet packet;
 	char sndr_addr[10];
 	if (gateway_found == false)
@@ -247,9 +246,9 @@ static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 static bool process_packet_gateway(route_packet packet_gw)
 {
 	//printf("%s\r\n",__func__);
-	static uint16_t prev_rssi = 0,current_rssi = 0;
+	static int16_t prev_rssi = -100,current_rssi = 0;
 
-	char *prev_addr = NULL;
+	static char prev_addr[20];
 	char path[20];
 	char gw_id[20];
 	current_rssi = packet_gw.rssi;
@@ -263,26 +262,24 @@ static bool process_packet_gateway(route_packet packet_gw)
 	current_addr = strtok(NULL, delim);
 	//memcpy(packet_ptr+packet_len,&linkaddr_node_addr,2);
 	//packet_len += 2;
-	printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
-	printf("path: %s\n",packet_gw.path);
-	printf("current address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_rssi,current_rssi);
+	//printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
+	//printf("path: %s\n",packet_gw.path);
+	//printf("current address: %s prev address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_addr,prev_rssi,current_rssi);
 	if(strcmp(current_addr,prev_addr)) //strcmp returns 1 if 2 address are not same
-	//if(true)
 	{
+		printf("curr addr != prev addr");
 		if(current_rssi > (prev_rssi+10) )
 		{
-			//printf("**** current_rssi > (prev_rssi + 30) **\r\n");
+			//printf("**** current_rssi > (prev_rssi + 10) **\r\n");
 			strcpy(prev_addr,current_addr);
 			prev_rssi = current_rssi;
-			printf("curr rssi %d nearest_tracking_mote_addr %s\r\n",current_rssi,current_addr);
-			//print_packet(packet_ptr,packet_len);
+			printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
 		}
 	}
 	else
 	{
 		prev_rssi = current_rssi;
-//		printf("curr rssi %d nearest_tracking_mote_addr %x.%x\r\n",current_rssi,current_addr.u8[0],current_addr.u8[1]);
-		//print_packet(packet_ptr,packet_len);
+		printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
 	}
 	return true;
 }
@@ -291,7 +288,7 @@ static bool process_packet_gateway(route_packet packet_gw)
 static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 {
 #ifndef MOBILE_MOTE
-	printf("RSSI %d = \n", (int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
+	//printf("RSSI %d = \n", (int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
 	static route_packet rx_packet;
 	bool a;
 	char s_addr[20];
@@ -357,7 +354,6 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 {
 #ifndef MOBILE_MOTE
 	static route_packet rx_packet_uni;
-	bool a;
 	char s_addr[20];
 
 	//printf("\nCheck fot unicast(1) = %d",packetbuf_attr(PACKETBUF_ATTR_PACKET_TYPE));
@@ -384,14 +380,12 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 			if (node_id_new != 1) //not Gateway node
 			{
 				forward_data(from, false);
-				printf("\n%b",a);
 			}
 			else
 			{
 				//uint16_t rssi, packet_len;
 				//packet_len = packetbuf_datalen();
 				//printf("rssi at broadcast receive: %x\r\n",rssi);
-				rx_packet_uni.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
 				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
 				strcat(rx_packet_uni.path, s_addr);
 				process_packet_gateway(rx_packet_uni);
