@@ -1,4 +1,4 @@
-#define MOBILE_MOTE 1
+//#define MOBILE_MOTE 1
 /*----------------------------INCLUDES----------------------------------------*/
 // standard C includes:
 #include <stdio.h>
@@ -18,7 +18,7 @@
 
 static uint16_t node_id;		        // Stores node id
 static int node_id_new;		        // Stores node id
-
+static bool ListEmpty;
 const linkaddr_t node_addr;
 
 #include "helpers.h"
@@ -49,6 +49,19 @@ static void print_settings(void)
 			linkaddr_node_addr.u8[1]);
 	printf("Using radio channel %d\n", channel);
 	printf("---------------------------------------\n");
+}
+
+void remove_nbr(void *n)
+{
+	neighbors *e = n;
+	printf("*neighbor_removed:%x.%x\r\n",e->nbr_addr.u8[0],e->nbr_addr.u8[1]);
+	list_remove(nbr_list,e);
+	memb_free(&neighbor_mem,e);
+	if(!list_length(nbr_list))
+	{
+		printf("list length zero making ListEmpty true\r\n");
+		ListEmpty = true;
+	}
 }
 
 bool is_duplicate_entry(const linkaddr_t *address, uint8_t cost)
@@ -84,9 +97,9 @@ void print_routing_table()
 	}
 	printf("\r\n");
 }
-#include "dev/adc-zoul.h"      // ADC
-#include "dev/zoul-sensors.h"  // Sensor functions
-#include "dev/sys-ctrl.h"
+
+
+
 void add_routing_entry(const linkaddr_t *address, uint8_t cost)
 {
 	bool status = false;
@@ -106,6 +119,7 @@ void add_routing_entry(const linkaddr_t *address, uint8_t cost)
 			linkaddr_copy(&temp->nbr_addr, address);
 			temp->hop_count = cost + 1;
 			list_add(nbr_list, temp);
+			//ctimer_set(&temp->node_timer,CLOCK_SECOND*TIME_TO_LIVE,remove_nbr,temp);
 			print_routing_table();
 		}
 		else
@@ -117,6 +131,7 @@ void add_routing_entry(const linkaddr_t *address, uint8_t cost)
 
 static void inform_neighbor(const linkaddr_t * address)
 {
+	leds_on(LEDS_BLUE);
 	route_packet tx_payload;
 	strcpy(tx_payload.text, "Gateway!");
 	strcpy(tx_payload.type, "unicast");
@@ -128,6 +143,7 @@ static void inform_neighbor(const linkaddr_t * address)
 	packetbuf_set_addr(PACKETBUF_ADDR_ESENDER, 1);
 	printf("\nSending Unicast packet: type : %s",tx_payload.type);
 	unicast_send(&unicast, address);
+	leds_off(LEDS_BLUE);
 }
 
 void estimate_short_path()
@@ -176,6 +192,7 @@ void share_routing_table()
 	for (e = (neighbors *) list_head(nbr_list); e != NULL;
 			e = (neighbors *) e->next)
 	{
+		leds_on(LEDS_BLUE);
 		if (node_id_new == 1)	//Gateway node
 		{
 			nearest_neighbor.cost = 0;
@@ -193,6 +210,7 @@ void share_routing_table()
 		printf("\nSending Unicast message to %x%x: Hops = %d type = %s",
 				e->nbr_addr.u8[0], e->nbr_addr.u8[1], payload.hops,payload.type);
 		unicast_send(&unicast, &e->nbr_addr);
+		leds_off(LEDS_BLUE);
 	}
 
 }
@@ -229,6 +247,7 @@ static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 	printf("Neighbor Address: %x%x",nearest_neighbor.addr.u8[0],nearest_neighbor.addr.u8[1]);
 	if (nearest_neighbor.addr.u8[0] != 0 && nearest_neighbor.addr.u8[1] != 0)
 	{
+		leds_on(LEDS_PURPLE);
 		packetbuf_copyfrom(&packet, 80);
 		printf("\nForwarding unicast packet: '%s' RSSI %d type: %s path:%s\n",
 						packet.text, packet.rssi, packet.type,
@@ -236,6 +255,7 @@ static void forward_data(const linkaddr_t *from, bool broadcast_packet)
 		//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,ASSET_TRACKING);
 		//Later unicast it to nearby nearest neighbor
 		unicast_send(&unicast, &nearest_neighbor.addr);
+		leds_off(LEDS_PURPLE);
 
 	}
 
@@ -264,10 +284,10 @@ static bool process_packet_gateway(route_packet packet_gw)
 	//packet_len += 2;
 	//printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
 	//printf("path: %s\n",packet_gw.path);
-	//printf("current address: %s prev address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_addr,prev_rssi,current_rssi);
+	printf("current address: %s prev address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_addr,prev_rssi,current_rssi);
 	if(strcmp(current_addr,prev_addr)) //strcmp returns 1 if 2 address are not same
 	{
-		printf("curr addr != prev addr");
+		//printf("curr addr != prev addr");
 		if(current_rssi > (prev_rssi+10) )
 		{
 			//printf("**** current_rssi > (prev_rssi + 10) **\r\n");
@@ -292,7 +312,7 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 	static route_packet rx_packet;
 	bool a;
 	char s_addr[20];
-
+	char animal_mote_addr[20];
 	packetbuf_copyto(&rx_packet);
 
 	if ((int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI) > (-60))
@@ -328,19 +348,19 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 				//printf("rssi at broadcast receive: %x\r\n",rssi);
 				rx_packet.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
 				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
+				sprintf(animal_mote_addr, "%x",((from->u8[0] << 8) | from->u8[1]));
 				strcat(rx_packet.path, s_addr);
-				process_packet_gateway(rx_packet);
+				//process_packet_gateway(rx_packet);
+				printf("animal mote addr: %s\n",animal_mote_addr);
 				//linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
-				/*if (linkaddr_cmp(&asset1_addr, asset_addr))
+				if (!strcmp(animal_mote_addr, "ee65"))
+				{
+					process_packet_gateway(rx_packet);
+				}
+				 if (!strcmp(animal_mote_addr, "ee66"))
 				 {
-				 process_packet_gateway_asset1(packetbuf_dataptr(),
-				 packet_len + 4);
+					 process_packet_gateway(rx_packet);
 				 }
-				 if (linkaddr_cmp(&asset2_addr, asset_addr))
-				 {
-				 process_packet_gateway_asset2(packetbuf_dataptr(),
-				 packet_len + 4);
-				 }*/
 			}
 			//unicast_send(&unicast, &nearest_neighbor.addr);
 		}
@@ -355,7 +375,7 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 #ifndef MOBILE_MOTE
 	static route_packet rx_packet_uni;
 	char s_addr[20];
-
+	char path[20];
 	//printf("\nCheck fot unicast(1) = %d",packetbuf_attr(PACKETBUF_ATTR_PACKET_TYPE));
 	if ((int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI) > (-60))
 	{
@@ -388,19 +408,21 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 				//printf("rssi at broadcast receive: %x\r\n",rssi);
 				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
 				strcat(rx_packet_uni.path, s_addr);
-				process_packet_gateway(rx_packet_uni);
+				strcpy(path,rx_packet_uni.path);
+				char *delim = "-";
+				char *animal_mote_addr = strtok(path, delim);
+				printf("animal mote addr: %s\n",animal_mote_addr);
+				//process_packet_gateway(rx_packet_uni);
 
 				linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
-				/*if (linkaddr_cmp(&asset1_addr, asset_addr))
+				if (!strcmp(animal_mote_addr, "ee65"))
+				{
+					process_packet_gateway(rx_packet_uni);
+				}
+				 if (!strcmp(animal_mote_addr, "ee66"))
 				 {
-				 process_packet_gateway_asset1(packetbuf_dataptr(),
-				 packet_len + 4);
+					 process_packet_gateway(rx_packet_uni);
 				 }
-				 if (linkaddr_cmp(&asset2_addr, asset_addr))
-				 {
-				 process_packet_gateway_asset2(packetbuf_dataptr(),
-				 packet_len + 4);
-				 }*/
 			}
 		}
 		leds_off(LEDS_GREEN);
@@ -549,6 +571,10 @@ PROCESS_THREAD(flooding_process, ev, data)
 						process_post(&route_share_process,
 						PROCESS_EVENT_MSG, 0);
 						//PROCESS_EXIT(); // Exit the process.
+//						if(ListEmpty)
+//						{
+//							process_post(&flooding_process, NULL, 0);
+//						}
 					}
 				}
 
