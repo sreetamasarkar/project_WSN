@@ -1,0 +1,15 @@
+/**
+ * @mainpage
+ *  Project wildSENSE – Track and Monitor Wildlife using WSN 
+ *
+ * ===
+ * @section s0 Introduction
+ *		This project demonstrates the application of Wireless Sensor Networks to track and monitor wildlife using Zolertia RE-Mote hardware units. The wildlife can be tracked if they enter surrounding *human villages and target animals can be monitored for their health conditions. Tiger-human conflict in Sunderbans National Park has been taken as the target case in this project. Mobile Zolertia RE-Motes, *considered attached to the tigers are mobile motes broadcast localization and health data continuously. Fixed motes forming the network gather and forward this data to a central entity, the Gateway. Data *collected at the gateway is used to display the location and the health conditions of the tigers. The implementation has been realized with Contiki, an open source event driven operating system for the internet *of things, that finds its use in networking models having low power and memory constraints.
+ *	
+ *
+ * ===
+ * @section s1 First section
+ *		
+ */
+
+
