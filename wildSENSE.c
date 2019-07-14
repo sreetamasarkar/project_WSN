@@ -1,10 +1,12 @@
-#define MOBILE_MOTE 1
+//#define MOBILE_MOTE 1 //Uncomment for downloading code to mobile motes
+
 /*----------------------------INCLUDES----------------------------------------*/
 // standard C includes:
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+
 // Contiki-specific includes:
 #include "contiki.h"
 #include "net/rime/rime.h"     // Establish connections.
@@ -16,28 +18,30 @@
 #include "dev/zoul-sensors.h"  // Sensor functions
 #include "dev/sys-ctrl.h"
 
-static uint16_t node_id;		        // Stores node id
-static int node_id_new;		        // Stores node id
-static bool ListEmpty;
-const linkaddr_t node_addr;
-
 #include "helpers.h"
 
-LIST(nbr_list);
-MEMB(neighbor_mem, neighbors, MAX_NEIGHBORS);
+static uint16_t node_id;		    // Stores node id
+static int node_id_new;		        // Stores node id mapped from 1,..,8
+static bool ListEmpty;				//Checks id neighbor list is empty
+nodes nearest_nbr;
+static bool gateway_reached = false;
 
-//static int rssi_arr[MAX_NEIGHBORS][3]; //take last 3 values of rssi
+LIST(neighbor_list);
+MEMB(mem_alloc_neighbor, neighbor, MAX_NEIGHBORS);
 
 // Creates an instance of a broadcast connection.
 static struct broadcast_conn broadcast;
 
 // Creates an instance of a unicast connection.
 static struct unicast_conn unicast;
-nodes nearest_neighbor;
-static bool gateway_found = false;
 
-//------------------------ FUNCTIONS ------------------------
-// Prints the current settings.
+
+
+//------------------------------------- FUNCTIONS -----------------------------------
+
+/*
+ * Prints the current settings.
+ */
 static void print_settings(void)
 {
 	radio_value_t channel;
@@ -51,230 +55,242 @@ static void print_settings(void)
 	printf("---------------------------------------\n");
 }
 
-void remove_nbr(void *n)
+/*
+ * Removes neighbor from which packets are not received for a certain time
+ */
+void neighbor_remove(void *n)
 {
-	neighbors *e = n;
-	printf("*neighbor_removed:%x.%x\r\n",e->nbr_addr.u8[0],e->nbr_addr.u8[1]);
-	list_remove(nbr_list,e);
-	memb_free(&neighbor_mem,e);
-	if(!list_length(nbr_list))
+	neighbor *e = n;
+	printf("*neighbor_removed: %x%x\r\n",e->address.u8[0],e->address.u8[1]);
+	list_remove(neighbor_list,e);
+	memb_free(&mem_alloc_neighbor,e);
+	if(!list_length(neighbor_list))
 	{
 		printf("list length zero making ListEmpty true\r\n");
 		ListEmpty = true;
 	}
 }
 
-bool is_duplicate_entry(const linkaddr_t *address, uint8_t cost)
+/*
+ * Updates cost of neighbors which are already in list
+ * @param address is the neighbor address from which is receives unicast packets
+ * @param cost is the cost of nearest neighbor of that neighbor from ehich is receives packets
+ * @return returns true if neighbor in list, false otherwise
+ *
+ */
+bool update_nbr_cost(const linkaddr_t *address, uint8_t cost)
 {
-	//This for iteration purpose only
-	neighbors *e;
-	for (e = (neighbors *) list_head(nbr_list); e != NULL;
-			e = (neighbors *) e->next)
+	//Traversing the neighbor list
+	neighbor *e;
+	for (e = (neighbor *) list_head(neighbor_list); e != NULL;
+			e = (neighbor *) e->next)
 	{
 
-		if (linkaddr_cmp(address, &e->nbr_addr))
+		if (linkaddr_cmp(address, &e->address))
 		{
-			e->hop_count = cost + 1;
-			//ctimer_set(&e->node_timer,CLOCK_SECOND*TIME_TO_LIVE,remove_nbr,e);
+			e->cost = cost + 1;
+			//ctimer_set(&e->node_timer,CLOCK_SECOND*TIME_TO_LIVE,neighbor_remove,e);
 			return true;
 		}
 	}
 	return false;
 }
 
-void print_routing_table()
+/*
+ * Prints Neighbor list with cost at each Tracking Mote
+ */
+void print_nbr_list()
 {
-	neighbors *e;
+	neighbor *e;
 
 	printf("\nPrint Neighbour list: ");
-//	printf("%s\r\n",__func__);
-	for (e = (neighbors *) list_head(nbr_list); e != NULL;
-			e = (neighbors *) e->next)
+	for (e = (neighbor *) list_head(neighbor_list); e != NULL;
+			e = (neighbor *) e->next)
 	{
 		int neighbor_addr = node_id_map(
-				((e->nbr_addr.u8[0] << 8) | e->nbr_addr.u8[1]));
-		printf("\nAddress: %d Cost: %d\r\n", neighbor_addr, e->hop_count);
+				((e->address.u8[0] << 8) | e->address.u8[1]));
+		printf("\nAddress: %d Cost: %d\r\n", neighbor_addr, e->cost);
 	}
 	printf("\r\n");
 }
 
+/*
+ * This functions checks if neighbor sending route packet is already in list. If it is already in list,
+ * its cost is updated, otherwise it is added to list.
+ * @param address is the neighbor address from which is receives unicast packets
+ * @param cost is the cost of nearest neighbor of that neighbor from ehich is receives packets
+ */
 
-
-void add_routing_entry(const linkaddr_t *address, uint8_t cost)
+void add_to_nbr_list(const linkaddr_t *address, uint8_t cost)
 {
-	bool status = false;
-	status = is_duplicate_entry(address, cost);
+	bool already_in_list = false;
+	already_in_list = update_nbr_cost(address, cost);
 	printf("\ncost = %d", cost);
-	if (false == status)
+	if (already_in_list == false)
 	{
 		printf("\nNew Neighbour found");
-		neighbors *temp = memb_alloc(&neighbor_mem);
-		/*		neighbors temp;,_from_animal_mote.text
-		 linkaddr_copy(&temp.nbr_addr,address);
-		 temp.hop_count = cost+1;
-		 list_add(nbr_list,&temp);
-		 print_routing_table();*/
+		neighbor *temp = memb_alloc(&mem_alloc_neighbor);
+
 		if (temp != NULL)
 		{
-			linkaddr_copy(&temp->nbr_addr, address);
-			temp->hop_count = cost + 1;
-			list_add(nbr_list, temp);
-			//ctimer_set(&temp->node_timer,CLOCK_SECOND*TIME_TO_LIVE,remove_nbr,temp);
-			print_routing_table();
+			linkaddr_copy(&temp->address, address);
+			temp->cost = cost + 1;
+			list_add(neighbor_list, temp);
+			//ctimer_set(&temp->node_timer,CLOCK_SECOND*TIME_TO_LIVE,neighbor_remove,temp);
+			print_nbr_list();
 		}
 		else
 		{
-			printf("mem alloc failed \r\n");
+			printf("Out of memory!! \r\n");
 		}
 	}
 }
 
-static void inform_neighbor(const linkaddr_t * address)
+/*
+ * This function is called at the Gateway when it receives broadcast packets from tracking mote
+ * to inform its neighbors
+ * @param address is the neighbor address from which is receives unicast packets
+ */
+static void gw_to_neighbor(const linkaddr_t * address)
 {
 	leds_on(LEDS_BLUE);
 	route_packet tx_payload;
 	strcpy(tx_payload.text, "Gateway!");
 	strcpy(tx_payload.type, "unicast");
 	tx_payload.hops = 0;
-	//tx_payload.hops = 5;
 	packetbuf_copyfrom(&tx_payload, 80);
-	//packetbuf_set_attr(PACKETBUF_ATTR_HOPS,0);
-	//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,UNICAST);
-	packetbuf_set_addr(PACKETBUF_ADDR_ESENDER, 1);
 	printf("\nSending Unicast packet: type : %s",tx_payload.type);
 	unicast_send(&unicast, address);
 	leds_off(LEDS_BLUE);
 }
 
-void estimate_short_path()
+/*
+ * This function goes through the neighbor list and stores the address and cost of
+ * the neighbor with minimum cost in the structure nearest_nbr
+ */
+void calculate_nearest_neighbor()
 {
-	//This for iteration purpose only
-	static neighbors *tmp_nearest;
-	static neighbors temp_nearest_node;
+	static neighbor *tmp_nearest;
+	static neighbor temp_nearest_node;
 
-	if (list_length(nbr_list))
+	if (list_length(neighbor_list))
 	{
-		tmp_nearest = (neighbors *) list_head(nbr_list);
+		tmp_nearest = (neighbor *) list_head(neighbor_list);
 
-		temp_nearest_node.hop_count = tmp_nearest->hop_count;
-		linkaddr_copy(&temp_nearest_node.nbr_addr, &tmp_nearest->nbr_addr);
+		temp_nearest_node.cost = tmp_nearest->cost;
+		linkaddr_copy(&temp_nearest_node.address, &tmp_nearest->address);
 
-		static neighbors *e;
-		for (e = (neighbors *) tmp_nearest->next; e != NULL;
-				e = (neighbors *) e->next)
+		static neighbor *e;
+		for (e = (neighbor *) tmp_nearest->next; e != NULL;
+				e = (neighbor *) e->next)
 		{
-			if (e->hop_count < temp_nearest_node.hop_count)
+			if (e->cost < temp_nearest_node.cost)
 			{
-				temp_nearest_node.hop_count = e->hop_count;
-				linkaddr_copy(&temp_nearest_node.nbr_addr, &e->nbr_addr);
+				temp_nearest_node.cost = e->cost;
+				linkaddr_copy(&temp_nearest_node.address, &e->address);
 			}
 		}
-		linkaddr_copy(&nearest_neighbor.addr, &temp_nearest_node.nbr_addr);
 
-		nearest_neighbor.cost = temp_nearest_node.hop_count;
+		linkaddr_copy(&nearest_nbr.addr, &temp_nearest_node.address);
+		nearest_nbr.cost = temp_nearest_node.cost;
 
 	}
 	else
 	{
-		printf("list empty\r\n");
+		printf("Neighbor list empty!!!!\r\n");
 	}
 }
-
-void share_routing_table()
+/*
+ * This function checks its neighbor list and shares the cost of its nearest neighbor
+ */
+void nn_cost_share()
 {
-	estimate_short_path();
+	calculate_nearest_neighbor();
 	printf("\nNeighbor Nearest to Gateway (by hop count): %x%x",
-			nearest_neighbor.addr.u8[0], nearest_neighbor.addr.u8[1]);
+			nearest_nbr.addr.u8[0], nearest_nbr.addr.u8[1]);
 
 	route_packet payload;
-	static neighbors *e = NULL;
-	e = (neighbors *) list_head(nbr_list);
-	for (e = (neighbors *) list_head(nbr_list); e != NULL;
-			e = (neighbors *) e->next)
+	static neighbor *e = NULL;
+	e = (neighbor *) list_head(neighbor_list);
+	for (e = (neighbor *) list_head(neighbor_list); e != NULL;
+			e = (neighbor *) e->next)
 	{
 		leds_on(LEDS_BLUE);
 		if (node_id_new == 1)	//Gateway node
 		{
-			nearest_neighbor.cost = 0;
-			nearest_neighbor.addr.u8[0] = 0x00;
-			nearest_neighbor.addr.u8[1] = 0x01;
+			nearest_nbr.cost = 0;
+			nearest_nbr.addr.u8[0] = 0x00;
+			nearest_nbr.addr.u8[1] = 0x01;
 		}
 		strcpy(payload.text, "Share Route Table");
 		strcpy(payload.type, "unicast");
-		payload.hops = nearest_neighbor.cost;
-		//payload.hops = 7;
+		payload.hops = nearest_nbr.cost;
 		packetbuf_copyfrom(&payload, 80);
-		//packetbuf_set_attr(PACKETBUF_ATTR_HOPS,nearest_neighbor.cost);
-		//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,UNICAST);
-		packetbuf_set_addr(PACKETBUF_ADDR_ESENDER, &nearest_neighbor.addr);
+
 		printf("\nSending Unicast message to %x%x: Hops = %d type = %s",
-				e->nbr_addr.u8[0], e->nbr_addr.u8[1], payload.hops,payload.type);
-		unicast_send(&unicast, &e->nbr_addr);
+				e->address.u8[0], e->address.u8[1], payload.hops,payload.type);
+		unicast_send(&unicast, &e->address);
 		leds_off(LEDS_BLUE);
 	}
 
 }
 
-#ifndef ASSET_MOTE
 
 /**
- *
  * @param from address from whom this packet is received
  * @param is_broadcast this variable represents whether the packet received is
  * 			broadcast packet or unicast packet
  * @return returns true always as of now.
  */
-static void forward_data(const linkaddr_t *from, bool broadcast_packet)
+static void animal_packet_forward(const linkaddr_t *from, bool broadcast_packet)
 {
 	static route_packet packet;
 	char sndr_addr[10];
-	if (gateway_found == false)
+	if (gateway_reached == false)
 	{
-		printf("Asset packet received but gateway not found return \r\n");
+		printf("Gateway not in network!! \r\n");
 		//return false;
 	}
 	packetbuf_copyto(&packet);
-	printf("\nText = %s; Type = %s; Hops = %d; rssi = %d; path = %s\n",
-			packet.text, packet.type, packet.hops, packet.rssi, packet.path);
+//	printf("\nText = %s; Type = %s; Hops = %d; rssi = %d; path = %s\n",
+//			packet.text, packet.type, packet.hops, packet.rssi, packet.path);
 	if (broadcast_packet)
 	{
 		packet.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
 	}
 	sprintf(sndr_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
 	strcat(packet.path, sndr_addr);
-	printf("\nText = %s; Type = %s; Hops = %d; rssi = %d; path = %s\n",
-			packet.text, packet.type, packet.hops, packet.rssi, packet.path);
-	printf("Neighbor Address: %x%x",nearest_neighbor.addr.u8[0],nearest_neighbor.addr.u8[1]);
-	if (nearest_neighbor.addr.u8[0] != 0 && nearest_neighbor.addr.u8[1] != 0)
+//	printf("\nText = %s; Type = %s; Hops = %d; rssi = %d; path = %s\n",
+//			packet.text, packet.type, packet.hops, packet.rssi, packet.path);
+	printf("Neighbor Address: %x%x",nearest_nbr.addr.u8[0],nearest_nbr.addr.u8[1]);
+	if (nearest_nbr.addr.u8[0] != 0 && nearest_nbr.addr.u8[1] != 0)
 	{
 		leds_on(LEDS_PURPLE);
 		packetbuf_copyfrom(&packet, 80);
 		printf("\nForwarding unicast packet: '%s' RSSI %d type: %s path:%s\n",
 						packet.text, packet.rssi, packet.type,
 						packet.path);
-		//packetbuf_set_attr(PACKETBUF_ATTR_PACKET_TYPE,ASSET_TRACKING);
 		//Later unicast it to nearby nearest neighbor
-		unicast_send(&unicast, &nearest_neighbor.addr);
+		unicast_send(&unicast, &nearest_nbr.addr);
 		leds_off(LEDS_PURPLE);
 
 	}
 
-	//return true;
 }
-#endif //ASSET_MOTE
 
-
-
-static bool process_packet_gateway(route_packet packet_gw)
+/*
+ * This function checks to which tracking mote the animal 1 is closest, that is, rssi is max
+ * and prints the shortest path from animal mote 1 to gateway
+ */
+static void path_to_gateway_animal1(route_packet packet_gw)
 {
-	//printf("%s\r\n",__func__);
 	static int16_t prev_rssi = -100,current_rssi = 0;
 
 	static char prev_addr[20];
 	char path[20];
 	char gw_id[20];
 	current_rssi = packet_gw.rssi;
-	//linkaddr_copy(&current_addr,(linkaddr_t *)(ptr));
+
 	//adding gateway address to the end of the packet
 	sprintf(gw_id, "%x", (node_id));
 	strcat(packet_gw.path, gw_id);
@@ -284,8 +300,7 @@ static bool process_packet_gateway(route_packet packet_gw)
 	char *delim = "-";
 	char *current_addr = strtok(path, delim);
 	current_addr = strtok(NULL, delim);
-	//memcpy(packet_ptr+packet_len,&linkaddr_node_addr,2);
-	//packet_len += 2;
+
 	//printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
 	//printf("path: %s\n",packet_gw.path);
 	printf("current address: %s prev address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_addr,prev_rssi,current_rssi);
@@ -296,11 +311,7 @@ static bool process_packet_gateway(route_packet packet_gw)
 	char *bat_val = strtok(text, delim1);
 	char *temp_val = strtok(NULL, delim1);
 	char *hb_val = strtok(NULL, delim1);
-//	while (ptr != NULL)
-//	{
-//		printf("%s\n",ptr);
-//		ptr = strtok(NULL, delim1);
-//	}
+
 	//printf("Battery: %s Temperature: %s Hearbeat: %s\n",bat_val,temp_val,hb_val);
 
 	if(strcmp(current_addr,prev_addr)) //strcmp returns 1 if 2 address are not same
@@ -319,10 +330,66 @@ static bool process_packet_gateway(route_packet packet_gw)
 		prev_rssi = current_rssi;
 		printf("Battery:%s-Temp:%s-Heartbeat:%s-%s\n",bat_val,temp_val,hb_val,packet_gw.path);
 	}
-	return true;
 }
 
-// Defines the behavior of a connection upon receiving data.
+/*
+ * This function checks to which tracking mote the animal 2 is closest, that is, rssi is max
+ * and prints the shortest path from animal mote 2 to gateway
+ */
+
+static void path_to_gateway_animal2(route_packet packet_gw)
+{
+	static int16_t prev_rssi = -100,current_rssi = 0;
+
+	static char prev_addr[20];
+	char path[20];
+	char gw_id[20];
+	current_rssi = packet_gw.rssi;
+
+	//adding gateway address to the end of the packet
+	sprintf(gw_id, "%x", (node_id));
+	strcat(packet_gw.path, gw_id);
+	strcpy(path,packet_gw.path);
+
+	//Parse path
+	char *delim = "-";
+	char *current_addr = strtok(path, delim);
+	current_addr = strtok(NULL, delim);
+
+	//printf("Battery:30-Temp:45-Heartbeat:65-%s\n",packet_gw.path);
+	//printf("path: %s\n",packet_gw.path);
+	printf("current address: %s prev address: %s prev_rssi = %d current_rssi= %d\n",current_addr,prev_addr,prev_rssi,current_rssi);
+
+	//Parse packet text
+	char *text = packet_gw.text;
+	char *delim1 = "Bat: TempHb";
+	char *bat_val = strtok(text, delim1);
+	char *temp_val = strtok(NULL, delim1);
+	char *hb_val = strtok(NULL, delim1);
+
+	//printf("Battery: %s Temperature: %s Hearbeat: %s\n",bat_val,temp_val,hb_val);
+
+	if(strcmp(current_addr,prev_addr)) //strcmp returns 1 if 2 address are not same
+	{
+		//printf("curr addr != prev addr");
+		if(current_rssi > (prev_rssi+10) )
+		{
+			//printf(" current_rssi > (prev_rssi + 10) \r\n");
+			strcpy(prev_addr,current_addr);
+			prev_rssi = current_rssi;
+			printf("Battery:%s-Temp:%s-Heartbeat:%s-%s\n",bat_val,temp_val,hb_val,packet_gw.path);
+		}
+	}
+	else
+	{
+		prev_rssi = current_rssi;
+		printf("Battery:%s-Temp:%s-Heartbeat:%s-%s\n",bat_val,temp_val,hb_val,packet_gw.path);
+	}
+}
+
+/*
+ * Defines the behavior of a connection upon receiving broadcast data
+ */
 static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 {
 #ifndef MOBILE_MOTE
@@ -340,54 +407,48 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 //				"\nBroadcast message received from 0x%x%x: '%s' [RSSI %d] type: %s\n",
 //				from->u8[0], from->u8[1], rx_packet.text,
 //				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI), rx_packet.type);
-		//Here i will add only the neighbor entry to the table
-		//with infinite hop count
+
 		if (!strcmp(rx_packet.type, "TRACKING_MOTE")) //strcmp returns 0 if 2 strings are equal
 		{
 			printf("\nAdd neighbour to list: ");
 			//Adding neighbors to the list
-			add_routing_entry(from, INFINITE_HOP_COUNT);
+			add_to_nbr_list(from, INFINITE_HOP_COUNT);
 			if (node_id_new == 1) //Gateway node
 			{
-				inform_neighbor(from);
+				gw_to_neighbor(from);
 			}
 		}
 		if (!strcmp(rx_packet.type, "MOBILE_MOTE"))
 		{
 			if (node_id_new != 1) //not Gateway node
 			{
-				forward_data(from, true);
-				//printf("abc");
+				animal_packet_forward(from, true);
 			}
 			else
 			{
-				//uint16_t rssi, packet_len;
-				//packet_len = packetbuf_datalen();
-				//printf("rssi at broadcast receive: %x\r\n",rssi);
 				rx_packet.rssi = (int16_t)packetbuf_attr(PACKETBUF_ATTR_RSSI);
 				sprintf(s_addr, "%x-", ((from->u8[0] << 8) | from->u8[1]));
 				sprintf(animal_mote_addr, "%x",((from->u8[0] << 8) | from->u8[1]));
 				strcat(rx_packet.path, s_addr);
-				//process_packet_gateway(rx_packet);
 				printf("animal mote addr: %s\n",animal_mote_addr);
-				//linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
 				if (!strcmp(animal_mote_addr, "ee65"))
 				{
-					process_packet_gateway(rx_packet);
+					path_to_gateway_animal1(rx_packet);
 				}
 				 if (!strcmp(animal_mote_addr, "ee66"))
 				 {
-					 process_packet_gateway(rx_packet);
+					 path_to_gateway_animal2(rx_packet);
 				 }
 			}
-			//unicast_send(&unicast, &nearest_neighbor.addr);
 		}
 		leds_off(LEDS_GREEN);
 	}
 #endif //MOBILE_MOTE
 }
 
-// Defines the behavior of a connection upon receiving data.
+/*
+ * Defines the behavior of a connection upon receiving unicast data
+ */
 static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 {
 #ifndef MOBILE_MOTE
@@ -405,19 +466,19 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 //				rx_packet_uni.hops, rx_packet_uni.type,rx_packet_uni.path,
 //				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
 
-		if (!gateway_found)
-			gateway_found = true;
+		if (!gateway_reached)
+			gateway_reached = true;
 
 		if (!strcmp(rx_packet_uni.type, "unicast")) //strcmp returns 0 if 2 strings are equal
 		{
-			add_routing_entry(from, rx_packet_uni.hops);
-			print_routing_table();
+			add_to_nbr_list(from, rx_packet_uni.hops);
+			print_nbr_list();
 		}
 		if (!strcmp(rx_packet_uni.type, "MOBILE_MOTE"))
 		{
 			if (node_id_new != 1) //not Gateway node
 			{
-				forward_data(from, false);
+				animal_packet_forward(from, false);
 			}
 			else
 			{
@@ -432,14 +493,13 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 				printf("animal mote addr: %s\n",animal_mote_addr);
 				//process_packet_gateway(rx_packet_uni);
 
-				linkaddr_t *asset_addr = (linkaddr_t*) (packetbuf_dataptr() + 7);
 				if (!strcmp(animal_mote_addr, "ee65"))
 				{
-					process_packet_gateway(rx_packet_uni);
+					path_to_gateway_animal1(rx_packet_uni);
 				}
 				 if (!strcmp(animal_mote_addr, "ee66"))
 				 {
-					 process_packet_gateway(rx_packet_uni);
+					 path_to_gateway_animal2(rx_packet_uni);
 				 }
 			}
 		}
@@ -493,12 +553,17 @@ static const struct unicast_callbacks unicast_call =
 { unicast_recv };
 
 //--------------------- PROCESS CONTROL BLOCK ---------------------
-PROCESS(flooding_process, "Flooding Process");
-PROCESS(route_share_process, "Routing table sharing");
-AUTOSTART_PROCESSES(&flooding_process, &route_share_process);
+PROCESS(process_broadcast, "Broadcast Packet Process");
+PROCESS(process_cost_share, "Routing table sharing");
+AUTOSTART_PROCESSES(&process_broadcast, &process_cost_share);
 
 //------------------------ PROCESS' THREAD ------------------------
-PROCESS_THREAD(flooding_process, ev, data)
+/*
+ * This process is for broadcasting packets. Tracking motes broadcast 10 packets and stop.
+ * Animal motes keep on broadcasting packets containing sensor information. RED LEDs blink during
+ * sending broadcast packets.
+ */
+PROCESS_THREAD(process_broadcast, ev, data)
 {
 
 	PROCESS_EXITHANDLER(broadcast_close(&broadcast)
@@ -522,9 +587,9 @@ PROCESS_THREAD(flooding_process, ev, data)
 
 		// Open broadcast connection.
 		broadcast_open(&broadcast, 129, &broadcast_call);
+		// Open unicast connection.
 		unicast_open(&unicast, 146, &unicast_call);
 
-		// node_id = (linkaddr_node_addr.u8[1] & 0xFF);
 		node_id = ((linkaddr_node_addr.u8[0] << 8) | linkaddr_node_addr.u8[1]);
 		printf("node id = %x\n", node_id);
 		node_id_new = node_id_map(node_id);
@@ -537,19 +602,26 @@ PROCESS_THREAD(flooding_process, ev, data)
 			PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&broadcast_timer));
 			if (node_id_new != 1) //not gateway mote
 			{
+				//------------------------------ Animal Mote -----------------------------------------
 				if (node_id_new == 7 || node_id_new == 8) //mobile mote
 				{
 					leds_on(LEDS_RED);
+					//--------------------------- Sensor Values ----------------------------------------
+					//Get Battery value
 					int battery_val = vdd3_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED);
+					//Get temperature value
 					int temp_val = cc2538_temp_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED);
+					//Calculate heartbeat value
 					int adc3_value = adc_zoul.value(ZOUL_SENSORS_ADC3) >> 4;
 					int BPM = (adc3_value >= 920) ? adc3_value/13.857 : 0;
+
 					sprintf(_from_animal_mote.text, "Bat:%d Temp:%d Hb:%d",
 							battery_val, temp_val, BPM);
 					//strcpy(_from_animal_mote.text, "Message from Animal Mote!");
 					strcpy(_from_animal_mote.type, "MOBILE_MOTE");
 					_from_animal_mote.hops = INFINITE_HOP_COUNT;
 					_from_animal_mote.path[0] = '\0';
+
 					packetbuf_copyfrom(&_from_animal_mote, 80);
 					broadcast_send(&broadcast);
 					printf("\nBroadcast message %d sent.\n", broadcast_counter);
@@ -558,6 +630,7 @@ PROCESS_THREAD(flooding_process, ev, data)
 					CLOCK_SECOND * 5 * random_rand() / RANDOM_RAND_MAX);
 					leds_off(LEDS_RED);
 				}
+				//------------------------------ Tracking Mote --------------------------------------
 				else
 				{
 					if (broadcast_counter < 10)
@@ -583,10 +656,8 @@ PROCESS_THREAD(flooding_process, ev, data)
 								"--------------Stopping the broadcast-------------------- \n\r");
 						etimer_stop(&broadcast_timer);
 						//			print_routing_table();
-						//			check_gateway();
-						//			gBroadcast_ended=true;
 						broadcast_counter = 0;
-						process_post(&route_share_process,
+						process_post(&process_cost_share,
 						PROCESS_EVENT_MSG, 0);
 						//PROCESS_EXIT(); // Exit the process.
 //						if(ListEmpty)
@@ -602,17 +673,20 @@ PROCESS_THREAD(flooding_process, ev, data)
 	PROCESS_END();
 }
 
-PROCESS_THREAD(route_share_process, ev, data)
+/*
+ * This process shares the cost of its nearest neighbor with all other neighbors at regular interval
+ */
+PROCESS_THREAD(process_cost_share, ev, data)
 {
-PROCESS_EXITHANDLER(printf("****route_share_process terminated!***\r\n")
+PROCESS_EXITHANDLER(printf("----- Cost Sharing Process terminated!-----\r\n")
 ;
 )
 PROCESS_BEGIN()
 	;
 
-	static struct etimer route_share_etimer;
-	etimer_set(&route_share_etimer,
-	CLOCK_SECOND * ROUTE_SHARE_INTERVAL + (random_rand() % 5) / 5);
+	static struct etimer cost_share_timer;
+	etimer_set(&cost_share_timer,
+	CLOCK_SECOND * COST_SHARE_INTERVAL + (random_rand() % 5) / 5);
 
 	while (1)
 	{
@@ -620,20 +694,19 @@ PROCESS_BEGIN()
 		;
 		if (ev == PROCESS_EVENT_MSG)
 		{
-			if (etimer_expired(&route_share_etimer))
+			if (etimer_expired(&cost_share_timer))
 			{
-				printf("Found Gateway: %d\n", gateway_found);
-				if (gateway_found)
+				printf("Found Gateway: %d\n", gateway_reached);
+				if (gateway_reached)
 				{
-					printf("\nSharing routing table..");
-					share_routing_table();
+					printf("\nSharing cost of nearest neighbor..");
+					nn_cost_share();
 				}
-				etimer_set(&route_share_etimer,
-				CLOCK_SECOND * ROUTE_SHARE_INTERVAL + (random_rand() % 5) / 5);
+				etimer_set(&cost_share_timer,
+				CLOCK_SECOND * COST_SHARE_INTERVAL + (random_rand() % 5) / 5);
 			}
 
-			//etimer_set(&route_share_etimer, CLOCK_SECOND*ROUTE_SHARE_INTERVAL+(random_rand()%5)/5);
-			process_post(&route_share_process, PROCESS_EVENT_MSG, 0);
+			process_post(&process_cost_share, PROCESS_EVENT_MSG, 0);
 		}
 	}
 PROCESS_END();
