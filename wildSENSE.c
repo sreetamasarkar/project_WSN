@@ -1,4 +1,4 @@
-#define MOBILE_MOTE 1 //Uncomment for downloading code to mobile motes
+//#define MOBILE_MOTE 1 //Uncomment for downloading code to mobile motes
 
 /*----------------------------INCLUDES----------------------------------------*/
 // standard C includes:
@@ -36,11 +36,14 @@ static struct broadcast_conn broadcast;
 // Creates an instance of a unicast connection.
 static struct unicast_conn unicast;
 
+static void qt_display_RT();
+
 uint16_t node_id_map(uint16_t node_id);
 
 //--------------------- PROCESS CONTROL BLOCK ---------------------
 PROCESS(process_broadcast, "Broadcast Packet Process");
-PROCESS(process_cost_share, "Routing table sharing");
+PROCESS(process_cost_share, "Hop Count Sharing between neighbors");
+//PROCESS(process_qt_display_RT, "Sending Routing Table to QT");
 AUTOSTART_PROCESSES(&process_broadcast, &process_cost_share);
 
 
@@ -98,7 +101,7 @@ void neighbor_remove(void *n)
 					strcpy(gw.type, "TM");
 					gw.hops = 0;
 
-					packetbuf_clear();
+//					packetbuf_clear();
 					packetbuf_copyfrom(&gw, 80);
 					broadcast_send(&broadcast);
 					printf("\nBroadcast message %d sent.\n",
@@ -176,7 +179,7 @@ void add_to_nbr_list(const linkaddr_t *address, unsigned int cost)
 {
 	bool already_in_list = false;
 	already_in_list = update_nbr_cost(address, cost);
-	printf("\ncost = %d", cost);
+//	printf("\ncost = %d", cost);
 	if (already_in_list == false)
 	{
 		printf("\nNew Neighbour found");
@@ -209,7 +212,7 @@ static void gw_to_neighbor(const linkaddr_t * address)
 	strcpy(tx_payload.text, "Gateway!");
 	strcpy(tx_payload.type, "uni");
 	tx_payload.hops = 0;
-	packetbuf_clear();
+//	packetbuf_clear();
 	packetbuf_copyfrom(&tx_payload, 80);
 	printf("\nSending Unicast packet: type : %s\n",tx_payload.type);
 	unicast_send(&unicast, address);
@@ -278,7 +281,7 @@ void nn_cost_share()
 		strcpy(payload.text, "Share Route Table");
 		strcpy(payload.type, "uni");
 		payload.hops = nearest_nbr.cost;
-		packetbuf_clear();
+//		packetbuf_clear();
 		packetbuf_copyfrom(&payload, 80);
 
 		printf("\nSending Unicast message to %x%x: Hops = %d type = %s \n",
@@ -320,7 +323,7 @@ static void animal_packet_forward(const linkaddr_t *from, bool broadcast_packet)
 	if (nearest_nbr.addr.u8[0] != 0 && nearest_nbr.addr.u8[1] != 0)
 	{
 		leds_on(LEDS_PURPLE);
-		packetbuf_clear();
+//		packetbuf_clear();
 		packetbuf_copyfrom(&packet, 80);
 		printf("\nForwarding unicast packet: '%s' RSSI %d type: %s path:%s\n",
 						packet.text, packet.rssi, packet.type,
@@ -479,6 +482,7 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 			if (node_id_new != 1) //not Gateway node
 			{
 				animal_packet_forward(from, true);
+				printf("483\n");
 			}
 			else
 			{
@@ -497,7 +501,7 @@ static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 				 }
 			}
 		}
-		packetbuf_clear();
+		//packetbuf_clear();
 		leds_off(LEDS_GREEN);
 	}
 #endif //MOBILE_MOTE
@@ -522,7 +526,7 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 				from->u8[0], from->u8[1], rx_packet_uni.text,
 				rx_packet_uni.hops, rx_packet_uni.type,rx_packet_uni.path,
 				(int16_t) packetbuf_attr(PACKETBUF_ATTR_RSSI));
-		packetbuf_clear();
+//		packetbuf_clear();
 		if (!gateway_reached)
 			gateway_reached = true;
 		printf("\nIn function unicast receive: gateway_reached = %d",gateway_reached);
@@ -537,6 +541,7 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 			if (node_id_new != 1) //not Gateway node
 			{
 				animal_packet_forward(from, false);
+				printf("542\n");
 			}
 			else
 			{
@@ -561,9 +566,74 @@ static void unicast_recv(struct unicast_conn *c, const linkaddr_t *from)
 				 }
 			}
 		}
+		if (!strcmp(rx_packet_uni.type, "RT"))
+		{
+			if(node_id_new != 1)
+			{
+//				packetbuf_clear();
+				packetbuf_copyfrom(&rx_packet_uni, 80);
+				unicast_send(&unicast, &nearest_nbr.addr);
+			}
+			else
+			{
+				printf("\n$%s\n",rx_packet_uni.text);
+			}
+		}
 		leds_off(LEDS_GREEN);
 	}
 #endif //MOBILE_MOTE
+}
+
+static void qt_display_RT()
+{
+	route_packet rt_table;
+	neighbor *e1;
+	char s[30], s1[30];
+	int flag = 0;
+	if (gateway_reached && broadcast_ended)
+	{
+		if (node_id_new != 1)
+		{
+			sprintf(rt_table.text,"%x:",node_id);
+			strcpy(rt_table.type,"RT");
+			for (e1 = (neighbor *) list_head(neighbor_list); e1 != NULL;
+					e1 = (neighbor *) e1->next)
+			{
+				if (e1->cost < 10)
+				{
+					uint16_t neighbor_addr = ((e1->address.u8[0] << 8) | e1->address.u8[1]);
+					sprintf(s,"-%x-%d",neighbor_addr,e1->cost);
+					strcat(rt_table.text,s);
+					flag = flag +1;
+				}
+			}
+//			packetbuf_clear();
+			if (flag != 0)
+			{
+				packetbuf_copyfrom(&rt_table, 80);
+							printf("\nSending unicast packet: '%s' type: %s\n",rt_table.text, rt_table.type);
+							unicast_send(&unicast, &nearest_nbr.addr);
+
+			}
+		}
+		else
+		{
+			sprintf(s,"%x:",node_id);
+			for (e1 = (neighbor *) list_head(neighbor_list); e1 != NULL;
+											e1 = (neighbor *) e1->next)
+			{
+				if (e1->cost < 10)
+				{
+					uint16_t neighbor_addr = ((e1->address.u8[0] << 8) | e1->address.u8[1]);
+					sprintf(s1,"-%x-%d",neighbor_addr,e1->cost);
+					strcat(s,s1);
+					flag = flag +1;
+				}
+			}
+			if (flag != 0)
+				printf("\n$%s\n",s);
+		}
+	}
 }
 
 uint16_t node_id_map(uint16_t node_id)
@@ -678,16 +748,16 @@ PROCESS_THREAD(process_broadcast, ev, data)
 					//Calculate heartbeat value
 					uint16_t adc3_value = adc_zoul.value(ZOUL_SENSORS_ADC3) >> 4;
 					uint16_t BPM = (adc3_value >= 920) ? adc3_value/13.857 : 0;
-					printf("adc value: %d\n",adc3_value);
+//					printf("adc value: %d\n",adc3_value);
 					sprintf(_from_animal_mote.text, "Bat:%d Temp:%d Hb:%d",
 							battery_val, temp_val, BPM);
-					printf("\n%s",_from_animal_mote.text);
+//					printf("\n%s",_from_animal_mote.text);
 					//strcpy(_from_animal_mote.text, "Message from Animal Mote!");
 					strcpy(_from_animal_mote.type, "MM");
 					_from_animal_mote.hops = INFINITE_HOP_COUNT;
 					_from_animal_mote.path[0] = '\0';
 
-					packetbuf_clear();
+//					packetbuf_clear();
 					packetbuf_copyfrom(&_from_animal_mote, 80);
 					broadcast_send(&broadcast);
 					printf("\nBroadcast message %d sent.\n", broadcast_counter);
@@ -707,7 +777,7 @@ PROCESS_THREAD(process_broadcast, ev, data)
 						strcpy(_from_tracking_mote.type, "TM");
 						_from_tracking_mote.hops = INFINITE_HOP_COUNT;
 
-						packetbuf_clear();
+//						packetbuf_clear();
 						packetbuf_copyfrom(&_from_tracking_mote, 80);
 						broadcast_send(&broadcast);
 						printf("\nBroadcast message %d sent.\n",
@@ -753,15 +823,9 @@ PROCESS_BEGIN();
 
 	etimer_set(&cost_share_timer,
 	CLOCK_SECOND * COST_SHARE_INTERVAL + (random_rand() % 5) / 5);
-	printf("\n%f",CLOCK_SECOND * COST_SHARE_INTERVAL + (random_rand() % 5) / 5);
 	while (1)
 	{
-//		printf("\n744");
 		PROCESS_WAIT_EVENT();
-//		printf("\n746");
-//		if (ev == PROCESS_EVENT_MSG)
-//		{
-//			printf("\n749");
 			if (etimer_expired(&cost_share_timer))
 			{
 				printf("Found Gateway: %d\n", gateway_reached);
@@ -769,17 +833,83 @@ PROCESS_BEGIN();
 				{
 					printf("\nSharing cost of nearest neighbor..");
 					nn_cost_share();
-					printf("\n757");
+#ifndef MOBILE_MOTE
+					qt_display_RT();
+#endif
 				}
 				etimer_set(&cost_share_timer,
 				CLOCK_SECOND * COST_SHARE_INTERVAL + (random_rand() % 5) / 5);
-				printf("\n761");
 			}
-
-
-
-			//process_post(&process_cost_share, PROCESS_EVENT_MSG, 0);
-//		}
 	}
 PROCESS_END();
 }
+
+
+///*
+// * This process is for forwarding the neighbor list of each node to qt to display the routing
+// * table of each node
+// */
+//PROCESS_THREAD(process_qt_display_RT, ev, data)
+//{
+//PROCESS_EXITHANDLER(printf("----- Route Table Display Process terminated!-----\r\n");)
+//PROCESS_BEGIN();
+//
+//	static struct etimer rt_display_timer;
+//	route_packet rt_table;
+//	neighbor *e1;
+//	char s[10], s1[10];
+//	etimer_set(&rt_display_timer, CLOCK_SECOND * 20 + (random_rand() % 5) / 5);
+//	printf("807\n");
+//#ifndef MOBILE_MOTE
+//	while (1)
+//	{
+//		PROCESS_WAIT_EVENT();
+//		if (etimer_expired(&rt_display_timer))
+//		{
+//			printf("\nSharing Routing Table..");
+//			printf("Found Gateway: %d\n", gateway_reached);
+//			if (gateway_reached && broadcast_ended)
+//			{
+//				if (node_id_new != 1)
+//				{
+//					sprintf(rt_table.text,"%x:",node_id);
+//					strcpy(rt_table.type,"RT");
+//					for (e1 = (neighbor *) list_head(neighbor_list); e1 != NULL;
+//							e1 = (neighbor *) e1->next)
+//					{
+//						if (e1->cost < 10)
+//						{
+//							uint16_t neighbor_addr = ((e1->address.u8[0] << 8) | e1->address.u8[1]);
+//							sprintf(s,"-%x-%d",neighbor_addr,e1->cost);
+//							strcat(rt_table.text,s);
+//						}
+//					}
+//					printf("831\n");
+////					packetbuf_clear();
+//					packetbuf_copyfrom(&rt_table, 80);
+//					printf("\nSending unicast packet: '%s' type: %s\n",rt_table.text, rt_table.type);
+//					unicast_send(&unicast, &nearest_nbr.addr);
+//				}
+//				else
+//				{
+//					sprintf(s,"%x:",node_id);
+//					for (e1 = (neighbor *) list_head(neighbor_list); e1 != NULL;
+//													e1 = (neighbor *) e1->next)
+//					{
+//						if (e1->cost < 10)
+//						{
+//							uint16_t neighbor_addr = ((e1->address.u8[0] << 8) | e1->address.u8[1]);
+//							sprintf(s1,"-%x-%d",neighbor_addr,e1->cost);
+//							strcat(s,s1);
+//						}
+//					}
+//					printf("\n$%s\n",s);
+//				}
+//			}
+//			etimer_set(&rt_display_timer, CLOCK_SECOND * 20 + (random_rand() % 5) / 5);
+//		}
+//	}
+//#endif
+//PROCESS_END();
+//}
+
