@@ -1,4 +1,4 @@
-# Wildlife Sensing using WSN
+# wildSENSE: Tracking and Monitoring Wildlife using WSN
 
 This project demonstrates the application of Wireless Sensor Networks to track and monitor wildlife. 
 Few important features of the implemented sensor network can be summarized as:
